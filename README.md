@@ -62,6 +62,12 @@ NEXT_PUBLIC_API_URL=http://localhost:8080
 
 # API Key para autenticación (debe coincidir con la del servidor)
 NEXT_PUBLIC_API_KEY=dev-api-key-12345
+
+# Contraseña para acceder al dashboard
+# IMPORTANTE: Esta contraseña protege el acceso al dashboard
+
+DASHBOARD_PASSWORD=admin123
+
 ```
 
 > **Nota**: La API Key (`NEXT_PUBLIC_API_KEY`) debe coincidir con la variable `API_KEY` configurada en el servidor.
