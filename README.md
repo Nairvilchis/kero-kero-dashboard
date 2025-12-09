@@ -72,4 +72,9 @@ DASHBOARD_PASSWORD=admin123
 
 > **Nota**: La API Key (`NEXT_PUBLIC_API_KEY`) debe coincidir con la variable `API_KEY` configurada en el servidor.
 
+
 Puedes usar el archivo `.env.example` como referencia.
+
+## Licencia
+
+Este proyecto está bajo la Licencia GPLv3 (GNU General Public License v3). Ver el archivo [LICENSE](LICENSE) para más detalles.
