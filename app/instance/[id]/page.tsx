@@ -1,20 +1,18 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useParams } from 'next/navigation'
-import { instancesApi, webhookApi } from '@/lib/api'
-import { useAppStore } from '@/lib/store'
-import { MessageSquare, Users, Settings, Activity, Power, Trash2, ArrowLeft, Terminal } from 'lucide-react'
+import { useParams, useRouter } from 'next/navigation'
+import { getInstance, getWebhookConfig, saveWebhookConfig, updateInstance, deleteInstance } from '@/app/instances/actions'
+import { MessageSquare, Users, Settings, Activity, Power, Trash2, ArrowLeft, Terminal, Loader2 } from 'lucide-react'
 import Link from 'next/link'
 import ApiCheatSheetModal from '@/components/instances/ApiCheatSheetModal'
 import ChatInterface from '@/components/chat/ChatInterface'
 import CRMInterface from '@/components/crm/CRMInterface'
 import SyncControl from '@/components/instances/SyncControl'
 
-// ... (dentro del componente)
-
 export default function InstancePage() {
     const params = useParams()
+    const router = useRouter()
     const instanceId = params.id as string
     const [activeTab, setActiveTab] = useState('chat')
     const [instance, setInstance] = useState<any>(null)
@@ -27,37 +25,34 @@ export default function InstancePage() {
         enabled: true
     })
 
-    // ... (resto del código)
-
     useEffect(() => {
-        const fetchInstance = async () => {
+        const fetchInstanceData = async () => {
             try {
-                const response = await instancesApi.list()
-                const instances = response.data.data || []
-                const found = instances.find((inst: any) => inst.instance_id === instanceId)
+                // Fetch instance details via Server Action
+                const found = await getInstance(instanceId)
 
                 if (found) {
                     setInstance({
-                        id: found.instance_id,
-                        name: found.name || found.instance_id,
+                        id: found.id,
+                        name: found.name,
                         status: found.status,
-                        phone: found.jid ? found.jid.split('@')[0] : undefined,
+                        phone: found.phone,
                         webhook_url: found.webhook_url,
                         sync_history: found.sync_history
                     })
 
-                    // Cargar configuración de webhook desde Redis
+                    // Fetch webhook config via Server Action
                     try {
-                        const webhookResponse = await webhookApi.get(instanceId)
-                        if (webhookResponse.data) {
+                        const config = await getWebhookConfig(instanceId)
+                        if (config) {
                             setWebhookConfig({
-                                url: webhookResponse.data.url || found.webhook_url || '',
-                                events: webhookResponse.data.events || ['message', 'status', 'receipt'],
-                                secret: webhookResponse.data.secret || '',
-                                enabled: webhookResponse.data.enabled !== undefined ? webhookResponse.data.enabled : true
+                                url: config.url || found.webhook_url || '',
+                                events: config.events || ['message', 'status', 'receipt'],
+                                secret: config.secret || '',
+                                enabled: config.enabled !== undefined ? config.enabled : true
                             })
                         } else {
-                            // Si no hay config en Redis, usar valores por defecto con la URL de la BD
+                            // Defaults
                             setWebhookConfig({
                                 url: found.webhook_url || '',
                                 events: ['message', 'status', 'receipt'],
@@ -65,8 +60,8 @@ export default function InstancePage() {
                                 enabled: true
                             })
                         }
-                    } catch (error) {
-                        console.log('No webhook config in Redis, using defaults')
+                    } catch (err) {
+                        console.log('Using default webhook config')
                         setWebhookConfig({
                             url: found.webhook_url || '',
                             events: ['message', 'status', 'receipt'],
@@ -82,13 +77,53 @@ export default function InstancePage() {
             }
         }
 
-        fetchInstance()
+        fetchInstanceData()
     }, [instanceId])
+
+    const handleSaveSettings = async () => {
+        try {
+            // Guardar configuración básica de la instancia
+            await updateInstance(instance.id, {
+                name: instance.name,
+                webhook_url: webhookConfig.url,
+                sync_history: instance.sync_history
+            })
+
+            // Guardar configuración avanzada del webhook
+            // Nota: Si la API de webhook es diferente, deberías ajustar esto.
+            // Asumimos que saveWebhookConfig en actions.ts maneja la lógica correcta
+            if (webhookConfig.url) {
+                await saveWebhookConfig(instance.id, {
+                    url: webhookConfig.url,
+                    events: webhookConfig.events,
+                    secret: webhookConfig.secret,
+                    enabled: webhookConfig.enabled
+                })
+            }
+
+            alert('Configuración guardada correctamente')
+        } catch (error) {
+            console.error(error)
+            alert('Error al guardar configuración')
+        }
+    }
+
+    const handleDeleteInstance = async () => {
+        if (confirm('¿Estás seguro de eliminar esta instancia? Se perderán todos los datos.')) {
+            try {
+                await deleteInstance(instance.id)
+                router.push('/')
+            } catch (error) {
+                console.error(error)
+                alert('Error al eliminar la instancia')
+            }
+        }
+    }
 
     if (loading) {
         return (
             <div className="min-h-screen bg-zinc-50 dark:bg-black flex items-center justify-center">
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
             </div>
         )
     }
@@ -367,31 +402,7 @@ export default function InstancePage() {
                             {/* Botón Guardar */}
                             <div className="flex justify-end">
                                 <button
-                                    onClick={async () => {
-                                        try {
-                                            // Guardar configuración básica de la instancia
-                                            await instancesApi.update(instance.id, {
-                                                name: instance.name,
-                                                webhook_url: webhookConfig.url, // Usar la URL del webhookConfig
-                                                sync_history: instance.sync_history
-                                            })
-
-                                            // Guardar configuración avanzada del webhook en Redis
-                                            if (webhookConfig.url) {
-                                                await webhookApi.set(instance.id, {
-                                                    url: webhookConfig.url,
-                                                    events: webhookConfig.events,
-                                                    secret: webhookConfig.secret,
-                                                    enabled: webhookConfig.enabled
-                                                })
-                                            }
-
-                                            alert('Configuración guardada correctamente')
-                                        } catch (error) {
-                                            console.error(error)
-                                            alert('Error al guardar configuración')
-                                        }
-                                    }}
+                                    onClick={handleSaveSettings}
                                     className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors shadow-sm hover:shadow flex items-center gap-2"
                                 >
                                     <Settings className="w-4 h-4" />
@@ -413,16 +424,7 @@ export default function InstancePage() {
                                         </p>
                                     </div>
                                     <button
-                                        onClick={async () => {
-                                            if (confirm('¿Estás seguro de eliminar esta instancia?')) {
-                                                try {
-                                                    // await instancesApi.delete(instance.id)
-                                                    alert('Funcionalidad de eliminar pendiente de implementar en frontend')
-                                                } catch (error) {
-                                                    console.error(error)
-                                                }
-                                            }
-                                        }}
+                                        onClick={handleDeleteInstance}
                                         className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors text-sm font-medium"
                                     >
                                         Eliminar Definitivamente

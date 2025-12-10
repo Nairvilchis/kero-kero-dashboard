@@ -8,6 +8,8 @@ import CreateInstanceModal from '@/components/instances/CreateInstanceModal'
 import { Plus, RefreshCw, Search, Loader2 } from 'lucide-react'
 import Link from 'next/link'
 
+import { getInstances } from './actions'
+
 export default function InstancesPage() {
     const [loading, setLoading] = useState(true)
     const [isModalOpen, setIsModalOpen] = useState(false)
@@ -19,19 +21,12 @@ export default function InstancesPage() {
     const fetchInstances = async () => {
         setLoading(true)
         try {
-            const response = await instancesApi.list()
-            const data = response.data.data || []
-            // Adaptar la respuesta de la API al formato del store
-            // Asumiendo que la API devuelve un array de objetos con { id, status, ... }
-            const formattedInstances = data.map((inst: any) => ({
-                id: inst.instance_id,
-                name: inst.name || inst.instance_id,
-                status: inst.status === 'connected' ? 'connected' : 'disconnected',
-                phone: inst.phone // Assuming 'phone' is the correct field name from backend
-            }))
+            // Usamos la Server Action en lugar de llamar a la API directamente desde el navegador
+            // Esto se ejecuta en el backend de Next.js, que sí tiene acceso a kero-server
+            const formattedInstances = await getInstances()
             setInstances(formattedInstances)
         } catch (error) {
-            console.error('Error fetching instances:', error)
+            console.error('Error fetching instances via SSR Action:', error)
         } finally {
             setLoading(false)
         }

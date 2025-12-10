@@ -1,31 +1,45 @@
+'use client'
+
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
-import { instancesApi } from '@/lib/api'
+import { zodResolver } from '@hookform/resolvers/zod'
+import * as z from 'zod'
+import { createInstance } from '@/app/instances/actions'
 import { useAppStore } from '@/lib/store'
 import { Loader2, X } from 'lucide-react'
 
-interface CreateInstanceModalProps {
+const schema = z.object({
+    id: z.string().min(3, 'El ID debe tener al menos 3 caracteres').regex(/^[a-z0-9-_]+$/, 'Solo letras minúsculas, números, guiones y guiones bajos'),
+    webhook_url: z.string().url('Debe ser una URL válida (http/https)').optional().or(z.literal('')),
+    sync_history: z.boolean().default(false)
+})
+
+type FormData = z.infer<typeof schema>
+
+interface Props {
     isOpen: boolean
     onClose: () => void
 }
 
-interface FormData {
-    id: string
-    webhook_url?: string
-    sync_history: boolean
-}
-
-export default function CreateInstanceModal({ isOpen, onClose }: CreateInstanceModalProps) {
+export default function CreateInstanceModal({ isOpen, onClose }: Props) {
     const [loading, setLoading] = useState(false)
     const addInstance = useAppStore((state) => state.addInstance)
-    const { register, handleSubmit, formState: { errors }, reset } = useForm<FormData>()
+    const { register, handleSubmit, formState: { errors }, reset } = useForm<FormData>({
+        resolver: zodResolver(schema),
+        defaultValues: {
+            sync_history: false // Ensure default value for checkbox
+        }
+    })
 
     if (!isOpen) return null
 
     const onSubmit = async (data: FormData) => {
         setLoading(true)
         try {
-            await instancesApi.create(data)
+            await createInstance(data)
+            // Ya no dependemos de la respuesta directa para actualizar el store si usamos revalidatePath en la action
+            // Pero como estamos en client, podemos forzar un refresh o añadir optimísticamente
+            // window.location.reload() // Recarga simple para obtener la lista actualizada desde el servidor
             addInstance({
                 id: data.id,
                 name: data.id,

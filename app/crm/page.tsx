@@ -2,7 +2,10 @@
 
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { instancesApi, crmApi } from '@/lib/api'
+// NEW IMPORTS
+import { getInstances } from '@/app/instances/actions'
+import { getContacts, updateContact } from '@/app/crm/actions'
+
 import { useAppStore } from '@/lib/store'
 import { Search, Filter, User, Tag, Mail, Phone, Save, Loader2, ChevronDown, ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
@@ -31,17 +34,11 @@ export default function CRMPage() {
     const instances = useAppStore((state) => state.instances)
     const setInstances = useAppStore((state) => state.setInstances)
 
-    // Cargar instancias al inicio
+    // Cargar instancias al inicio usando SSR Action
     useEffect(() => {
         const loadInstances = async () => {
             try {
-                const response = await instancesApi.list()
-                const instances = response.data.data || []
-                const formatted = instances.map((inst: any) => ({
-                    id: inst.instance_id,
-                    name: inst.name || inst.instance_id,
-                    status: inst.status === 'connected' ? 'connected' : 'disconnected',
-                }))
+                const formatted = await getInstances()
                 setInstances(formatted)
 
                 // Si hay instancia en URL, usarla; si no, usar la primera
@@ -57,14 +54,14 @@ export default function CRMPage() {
         loadInstances()
     }, [instanceFromUrl])
 
-    // Cargar contactos cuando cambia la instancia
+    // Cargar contactos cuando cambia la instancia usando SSR Action
     useEffect(() => {
         if (!selectedInstance) return
 
         const loadContacts = async () => {
             setLoading(true)
             try {
-                const { data } = await crmApi.list(selectedInstance)
+                const data = await getContacts(selectedInstance)
                 setContacts(data || [])
             } catch (error) {
                 console.error('Error loading contacts:', error)
@@ -81,7 +78,7 @@ export default function CRMPage() {
         if (!selectedContact || !selectedInstance) return
 
         try {
-            await crmApi.update(selectedInstance, selectedContact.jid, {
+            await updateContact(selectedInstance, selectedContact.jid, {
                 name: selectedContact.name,
                 email: selectedContact.email,
                 notes: selectedContact.notes,

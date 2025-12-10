@@ -3,7 +3,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { useAppStore } from '@/lib/store'
 import { Send, MoreVertical, Search, Paperclip, Smile, Loader2, Trash2, X, Bell, BellOff, Volume2, VolumeX } from 'lucide-react'
-import { chatsApi, messagesApi } from '@/lib/api'
+// NEW IMPORTS
+import { getChats, getChatHistory, sendMessageText, markChatAsRead, deleteChat } from '@/app/chat/actions'
 import { requestNotificationPermission, showNotification, playNotificationSound, isPageVisible } from '@/lib/notifications'
 
 interface ChatInterfaceProps {
@@ -48,26 +49,17 @@ export default function ChatInterface({ instanceId }: ChatInterfaceProps) {
 
     const [notificationsEnabled, setNotificationsEnabled] = useState(true)
     const [soundEnabled, setSoundEnabled] = useState(true)
-
-    // Estado para usuarios escribiendo: JID -> timestamp (para limpiar timeouts)
     const [typingUsers, setTypingUsers] = useState<Record<string, number>>({})
 
-    // Cargar chats al montar
+    // Cargar chats usando Server Action
     const loadChats = async () => {
         setError(null)
         try {
-            console.log('Cargando chats para instancia:', instanceId)
-            const response = await chatsApi.list(instanceId)
-            console.log('Respuesta de chats:', response.data)
-            if (response.data.success) {
-                setChats(response.data.data || [])
-            } else {
-                console.error('Error en respuesta:', response.data)
-                setError('Error al cargar chats')
-            }
+            const data = await getChats(instanceId)
+            setChats(data)
         } catch (error: any) {
             console.error('Error loading chats:', error)
-            setError(error.response?.data?.message || error.message || 'Error de conexión')
+            setError('Error de conexión o instancia no disponible')
         } finally {
             setLoadingChats(false)
         }
@@ -75,18 +67,17 @@ export default function ChatInterface({ instanceId }: ChatInterfaceProps) {
 
     useEffect(() => {
         loadChats()
+        // Polling básico cada 30s para refrescar lista de chats si el WS falla
+        const interval = setInterval(loadChats, 30000)
+        return () => clearInterval(interval)
     }, [instanceId])
 
-    // Filtrar chats por pestaña y búsqueda
+    // Filtrar chats
     useEffect(() => {
         let filtered = chats
-
-        // Filtrar por tipo de chat según pestaña activa
         if (activeTab !== 'all') {
             filtered = filtered.filter(chat => chat.chat_type === activeTab)
         }
-
-        // Filtrar por búsqueda
         if (searchQuery.trim()) {
             const query = searchQuery.toLowerCase()
             filtered = filtered.filter(chat =>
@@ -94,21 +85,18 @@ export default function ChatInterface({ instanceId }: ChatInterfaceProps) {
                 chat.jid.includes(query)
             )
         }
-
         setFilteredChats(filtered)
     }, [searchQuery, chats, activeTab])
 
-    // Cargar mensajes cuando cambia el chat activo
+    // Cargar historial usando Server Action
     useEffect(() => {
         if (!activeChat) return
 
         const loadMessages = async () => {
             setLoadingMessages(true)
             try {
-                const response = await chatsApi.getHistory(instanceId, activeChat)
-                if (response.data.success) {
-                    setMessages(response.data.data || [])
-                }
+                const data = await getChatHistory(instanceId, activeChat)
+                setMessages(data)
             } catch (error) {
                 console.error('Error loading history:', error)
             } finally {
@@ -118,159 +106,70 @@ export default function ChatInterface({ instanceId }: ChatInterfaceProps) {
         loadMessages()
     }, [activeChat, instanceId])
 
-    // Scroll al fondo al recibir mensajes
+    // Scroll
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }, [messages])
 
-    // Conexión WebSocket para eventos en tiempo real
+    // WebSocket (Cliente -> Backend directo, puede fallar por Mixed Content/Scope si no está expuesto)
+    // Se mantiene como "Best Effort"
     useEffect(() => {
-        const apiUrl = localStorage.getItem('kero_api_url') || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
-        // Convertir http/https a ws/wss
+        // Intentar conectar a localhost:8080 o lo que esté en ENV
+        // Nota: Esto fallará si el usuario no tiene acceso directo al puerto 8080 del servidor.
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
         const wsUrl = apiUrl.replace(/^http/, 'ws') + `/instances/${instanceId}/ws`
 
-        const ws = new WebSocket(wsUrl)
-
-        ws.onopen = () => {
-            console.log('Conectado a WebSocket')
-        }
-
-        ws.onmessage = (event) => {
-            try {
-                const message = JSON.parse(event.data)
-
-                // Solo procesar eventos de tipo 'message'
-                if (message.type === 'message' && message.payload?.data) {
-                    const eventData = message.payload.data
-
-                    // Mapear MessageEvent a Message
-                    const newMsg: Message = {
-                        id: eventData.message_id,
-                        from: eventData.from,
-                        to: eventData.to,
-                        content: eventData.text || eventData.caption || `[${eventData.message_type}]`,
-                        timestamp: eventData.timestamp || Date.now() / 1000,
-                        is_from_me: eventData.is_from_me,
-                        status: 'received'
-                    }
-
-                    // Mostrar notificación si el mensaje no es mío
-                    if (!newMsg.is_from_me) {
-                        // Reproducir sonido si está habilitado
-                        if (soundEnabled) {
-                            playNotificationSound()
+        let ws: WebSocket
+        try {
+            ws = new WebSocket(wsUrl)
+            ws.onopen = () => console.log('WS Connected')
+            ws.onmessage = (event) => {
+                try {
+                    const message = JSON.parse(event.data)
+                    if (message.type === 'message' && message.payload?.data) {
+                        const eventData = message.payload.data
+                        const newMsg: Message = {
+                            id: eventData.message_id,
+                            from: eventData.from,
+                            to: eventData.to,
+                            content: eventData.text || eventData.caption || `[${eventData.message_type}]`,
+                            timestamp: eventData.timestamp || Date.now() / 1000,
+                            is_from_me: eventData.is_from_me,
+                            status: 'received'
                         }
 
-                        // Mostrar notificación de escritorio si:
-                        // 1. Las notificaciones están habilitadas
-                        // 2. La página no está en foco
-                        // 3. El mensaje no es del chat actualmente abierto (o el chat no está abierto)
-                        if (notificationsEnabled && !isPageVisible()) {
-                            const chatName = chats.find(c => c.jid === newMsg.from)?.name || newMsg.from.split('@')[0]
-                            const notificationBody = newMsg.content.length > 100
-                                ? newMsg.content.substring(0, 100) + '...'
-                                : newMsg.content
+                        if (!newMsg.is_from_me && soundEnabled) playNotificationSound()
 
-                            showNotification(`Nuevo mensaje de ${chatName}`, {
-                                body: notificationBody,
-                                tag: newMsg.from, // Agrupa notificaciones del mismo chat
-                                requireInteraction: false,
+                        // Update current chat messages
+                        if (activeChat && (newMsg.to === activeChat || newMsg.from === activeChat)) {
+                            setMessages(prev => {
+                                if (prev.some(m => m.id === newMsg.id)) return prev
+                                return [...prev, newMsg]
                             })
                         }
-                    }
-
-                    // 1. Si el mensaje es para el chat activo, agregarlo a la lista
-                    if (activeChat && (newMsg.to === activeChat || newMsg.from === activeChat)) {
-                        setMessages(prev => {
-                            // Evitar duplicados
-                            if (prev.some(m => m.id === newMsg.id)) return prev
-                            return [...prev, newMsg]
-                        })
-                    }
-
-                    // 2. Actualizar la lista de chats (último mensaje, unread count)
-                    setChats(prevChats => {
-                        // Buscar el chat afectado (puede ser el sender o el receiver)
-                        const chatJID = newMsg.is_from_me ? newMsg.to : newMsg.from
-                        const chatIndex = prevChats.findIndex(c => c.jid === chatJID)
-
-                        // Si el chat existe, actualizarlo y moverlo al principio
-                        if (chatIndex !== -1) {
-                            const updatedChat = { ...prevChats[chatIndex] }
-                            updatedChat.last_message = newMsg.content
-                            updatedChat.last_message_time = newMsg.timestamp
-
-                            // Incrementar unread si no es el chat activo y no es mío
-                            if (activeChat !== updatedChat.jid && !newMsg.is_from_me) {
-                                updatedChat.unread_count = (updatedChat.unread_count || 0) + 1
-                            } else if (activeChat === updatedChat.jid) {
-                                // Si es el chat activo, resetear unread count (asumiendo que se lee)
-                                updatedChat.unread_count = 0
-                            }
-
-                            const newChats = [...prevChats]
-                            newChats.splice(chatIndex, 1)
-                            return [updatedChat, ...newChats]
-                        }
-
-                        // Si el chat no existe (nuevo), recargar lista completa
+                        // Reload chats to update last message
                         loadChats()
-                        return prevChats
-                    })
-                } else if (message.type === 'presence' && message.payload?.data) {
-                    const { from, type } = message.payload.data
-
-                    setTypingUsers(prev => {
-                        const newTyping = { ...prev }
-                        if (type === 'composing' || type === 'recording') {
-                            newTyping[from] = Date.now()
-                        } else {
-                            delete newTyping[from]
-                        }
-                        return newTyping
-                    })
-
-                    // Limpiar estado de escribiendo después de 5 segundos si no llega evento de pausa
-                    if (type === 'composing' || type === 'recording') {
-                        setTimeout(() => {
-                            setTypingUsers(prev => {
-                                const newTyping = { ...prev }
-                                // Solo borrar si el timestamp coincide (para no borrar un nuevo "escribiendo")
-                                if (newTyping[from] && Date.now() - newTyping[from] >= 5000) {
-                                    delete newTyping[from]
-                                }
-                                return newTyping
-                            })
-                        }, 5000)
                     }
-                }
-            } catch (e) {
-                console.error('Error parsing WS message:', e)
+                } catch (e) { }
             }
-        }
-
-        ws.onerror = (err) => {
-            console.error('WebSocket Error:', err)
+        } catch (e) {
+            console.log('WS connection failed (expected if behind firewall/docker network issues)')
         }
 
         return () => {
-            ws.close()
+            if (ws) ws.close()
         }
     }, [instanceId, activeChat])
 
-    // Marcar como leído al abrir un chat
+    // Marcar como leído
     useEffect(() => {
         if (activeChat && instanceId) {
-            // Llamar a la API para marcar como leído
-            chatsApi.markAsRead(instanceId, activeChat).catch(console.error)
-
-            // Actualizar estado local inmediatamente
-            setChats(prev => prev.map(chat => {
-                if (chat.jid === activeChat) {
-                    return { ...chat, unread_count: 0 }
-                }
-                return chat
-            }))
+            markChatAsRead(instanceId, activeChat).then(() => {
+                setChats(prev => prev.map(chat => {
+                    if (chat.jid === activeChat) return { ...chat, unread_count: 0 }
+                    return chat
+                }))
+            })
         }
     }, [activeChat, instanceId])
 
@@ -281,14 +180,13 @@ export default function ChatInterface({ instanceId }: ChatInterfaceProps) {
         setSending(true)
         try {
             const phone = activeChat.split('@')[0]
-
-            const response = await messagesApi.sendText(instanceId, {
+            const response = await sendMessageText(instanceId, {
                 phone: phone,
                 message: messageInput
             })
 
             const newMessage: Message = {
-                id: response.data.message_id || Date.now().toString(),
+                id: response.message_id || Date.now().toString(),
                 from: 'me',
                 to: activeChat,
                 content: messageInput,
@@ -298,12 +196,10 @@ export default function ChatInterface({ instanceId }: ChatInterfaceProps) {
             }
             setMessages(prev => [...prev, newMessage])
             setMessageInput('')
-
-            // Recargar chats para actualizar el orden
             loadChats()
         } catch (error) {
             console.error('Error sending message:', error)
-            alert('Error al enviar mensaje')
+            alert('Error enviando mensaje')
         } finally {
             setSending(false)
         }
@@ -311,9 +207,8 @@ export default function ChatInterface({ instanceId }: ChatInterfaceProps) {
 
     const handleDeleteChat = async () => {
         if (!activeChat) return
-
         try {
-            await chatsApi.delete(instanceId, activeChat)
+            await deleteChat(instanceId, activeChat)
             setChats(prev => prev.filter(c => c.jid !== activeChat))
             setActiveChat(null)
             setMessages([])
@@ -326,26 +221,27 @@ export default function ChatInterface({ instanceId }: ChatInterfaceProps) {
 
     const handleSearchSubmit = (e: React.FormEvent) => {
         e.preventDefault()
-
-        // Si no hay resultados y el query parece un número, abrir nuevo chat
         if (filteredChats.length === 0 && searchQuery.match(/^\d+$/)) {
             const newJid = `${searchQuery}@s.whatsapp.net`
             setActiveChat(newJid)
             setMessages([])
             setSearchQuery('')
         } else if (filteredChats.length > 0) {
-            // Si hay resultados, seleccionar el primero
             setActiveChat(filteredChats[0].jid)
             setSearchQuery('')
         }
     }
 
     const formatTime = (timestamp: number) => {
-        return new Date(timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        try {
+            return new Date(timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        } catch (e) {
+            return ''
+        }
     }
 
     const truncate = (text: string, length = 30) =>
-        text.length > length ? text.slice(0, length) + "..." : text;
+        text && text.length > length ? text.slice(0, length) + "..." : text || '';
 
     return (
         <div className="flex h-[calc(100vh-10rem)] bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 overflow-hidden shadow-sm">
@@ -464,7 +360,6 @@ export default function ChatInterface({ instanceId }: ChatInterfaceProps) {
                                     <div className="w-full h-full rounded-full bg-zinc-300 dark:bg-zinc-700 flex items-center justify-center text-lg font-medium">
                                         {chat.name?.[0] || '?'}
                                     </div>
-                                    {/* Indicador de estado (opcional, por ahora solo unread) */}
                                     {chat.unread_count > 0 && (
                                         <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full border-2 border-white dark:border-zinc-900"></div>
                                     )}
@@ -489,7 +384,7 @@ export default function ChatInterface({ instanceId }: ChatInterfaceProps) {
                                             }`}>
                                             {typingUsers[chat.jid]
                                                 ? 'Escribiendo...'
-                                                : truncate(chat.last_message || "Imagen o archivo adjunto", 35)}
+                                                : truncate(chat.last_message || "Mensaje", 35)}
                                         </p>
                                         {chat.unread_count > 0 && (
                                             <div className="ml-2 min-w-[1.25rem] h-5 px-1.5 rounded-full bg-green-500 text-white text-[10px] flex items-center justify-center font-bold">
